@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'dart:math';
 
 import 'package:flutter/physics.dart';
+import 'package:rxdart/rxdart.dart';
 
 enum SlideDirection{
   UP,
@@ -19,7 +20,9 @@ enum SlideDirection{
 
 enum PanelState{
   OPEN,
-  CLOSED
+  CLOSED,
+  HIDDEN,
+  SNAPPED
 }
 
 class SlidingUpPanel extends StatefulWidget {
@@ -217,22 +220,26 @@ class _SlidingUpPanelState extends State<SlidingUpPanel> with SingleTickerProvid
   bool _scrollingEnabled = false;
   VelocityTracker _vt = new VelocityTracker();
 
-  bool _isPanelVisible = true;
+  bool _isPanelVisible;
 
   @override
   void initState(){
     super.initState();
 
+    _isPanelVisible = widget.defaultPanelState != PanelState.HIDDEN;
+
     _ac = new AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 300),
-      value: widget.defaultPanelState == PanelState.CLOSED ? 0.0 : 1.0 //set the default panel state (i.e. set initial value of _ac)
+      value: widget.defaultPanelState == PanelState.OPEN ? 1.0 : 0.0 //set the default panel state (i.e. set initial value of _ac)
     )..addListener((){
       if(widget.onPanelSlide != null) widget.onPanelSlide(_ac.value);
 
       if(widget.onPanelOpened != null && _ac.value == 1.0) widget.onPanelOpened();
 
       if(widget.onPanelClosed != null && _ac.value == 0.0) widget.onPanelClosed();
+
+      widget.controller._addPosition(_ac.value);
     });
 
     // prevent the panel content from being scrolled only if the widget is
@@ -541,6 +548,7 @@ class _SlidingUpPanelState extends State<SlidingUpPanel> with SingleTickerProvid
     return _ac.fling(velocity: -1.0).then((x){
       setState(() {
         _isPanelVisible = false;
+        widget.controller._updateState();
       });
     });
   }
@@ -550,6 +558,7 @@ class _SlidingUpPanelState extends State<SlidingUpPanel> with SingleTickerProvid
     return _ac.fling(velocity: -1.0).then((x){
       setState(() {
         _isPanelVisible = true;
+        widget.controller._updateState();
       });
     });
   }
@@ -596,6 +605,9 @@ class _SlidingUpPanelState extends State<SlidingUpPanel> with SingleTickerProvid
   //panel is shown/hidden
   bool get _isPanelShown => _isPanelVisible;
 
+  //returns whether or not the
+  //panel is at snap point
+  bool get _isPanelSnapped => _ac.value == widget.snapPoint;
 }
 
 
@@ -606,10 +618,44 @@ class _SlidingUpPanelState extends State<SlidingUpPanel> with SingleTickerProvid
 
 
 class PanelController{
+  final _positionSubject = BehaviorSubject<double>.seeded(0.0);
+  final _statesSubject =
+  BehaviorSubject<PanelState>.seeded(PanelState.CLOSED);
+
   _SlidingUpPanelState _panelState;
+
+  ValueStream<double> get position => _positionSubject;
+
+  ValueStream<PanelState> get states => _statesSubject;
 
   void _addState(_SlidingUpPanelState panelState){
     this._panelState = panelState;
+    _positionSubject.add(this._panelState._panelPosition);
+    _updateState();
+  }
+
+  void _addPosition(double position){
+    _positionSubject.add(position);
+    _updateState();
+  }
+
+  void _updateState() {
+    final state = _getPanelState();
+    if(state != states.value) {
+      _statesSubject.add(state);
+    }
+  }
+
+  PanelState _getPanelState() {
+    if(!this._panelState._isPanelVisible) {
+      return PanelState.HIDDEN;
+    } else if(this._panelState._isPanelOpen) {
+      return PanelState.OPEN;
+    }else if(this._panelState._isPanelClosed) {
+      return PanelState.CLOSED;
+    } else if(this._panelState._isPanelSnapped) {
+      return PanelState.SNAPPED;
+    }
   }
 
   /// Determine if the panelController is attached to an instance
@@ -625,8 +671,9 @@ class PanelController{
 
   /// Opens the sliding panel fully
   /// (i.e. to the maxHeight)
-  Future<void> open(){
+  Future<void> open() async{
     assert(isAttached, "PanelController must be attached to a SlidingUpPanel");
+    await _panelState._show();
     return _panelState._open();
   }
 
